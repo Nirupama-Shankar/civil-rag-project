@@ -26,9 +26,13 @@ Streamlit (frontend)
 ▶ Run Locally
 
 pip install -r requirements.txt
+
 python extract_images.py
+
 python ingest.py
+
 python image_ingest.py
+
 streamlit run streamlit_app.py
 
 📌 Project Focus
