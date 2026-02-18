@@ -1,59 +1,72 @@
 import os
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+    Docx2txtLoader,
+    TextLoader,
+    UnstructuredFileLoader
+)
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
-DATA_PATH = "data"
+DATA_FOLDER = "data"
+
+def load_document(file_path):
+    extension = file_path.split(".")[-1].lower()
+
+    if extension == "pdf":
+        loader = PyPDFLoader(file_path)
+
+    elif extension == "docx":
+        loader = Docx2txtLoader(file_path)
+
+    elif extension == "txt":
+        loader = TextLoader(file_path)
+
+    elif extension in ["md", "doc"]:
+        loader = UnstructuredFileLoader(file_path)
+
+    else:
+        print(f"⚠️ Unsupported format: {file_path}")
+        return []
+
+    return loader.load()
+
+
+print("📚 Starting Multi-Format Ingestion...\n")
 
 all_documents = []
 
-print("📚 Starting PDF ingestion...\n")
+for file in os.listdir(DATA_FOLDER):
+    file_path = os.path.join(DATA_FOLDER, file)
 
-# 🔹 Load all PDFs safely
-for file in os.listdir(DATA_PATH):
-    if file.endswith(".pdf"):
-        file_path = os.path.join(DATA_PATH, file)
+    if os.path.isfile(file_path):
         print(f"Loading {file}...")
-
         try:
-            loader = PyPDFLoader(file_path)
-            documents = loader.load()
+            documents = load_document(file_path)
+            print(f"   ✅ Loaded {len(documents)} sections")
             all_documents.extend(documents)
-            print(f"   ✅ Loaded {len(documents)} pages")
-
         except Exception as e:
-            print(f"   ⚠️ Skipping {file} due to error:")
-            print(f"      {e}\n")
+            print(f"   ❌ Failed to load {file}: {e}")
 
-print(f"\nTotal pages successfully loaded: {len(all_documents)}")
+print(f"\nTotal documents loaded: {len(all_documents)}")
 
-if len(all_documents) == 0:
-    print("❌ No documents loaded. Exiting.")
-    exit()
-
-# 🔹 Strong chunking strategy
+# Split text
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=600,
-    chunk_overlap=120
-
+    chunk_size=500,
+    chunk_overlap=100
 )
 
 chunks = text_splitter.split_documents(all_documents)
-
 print(f"Total chunks created: {len(chunks)}")
 
-# 🔹 Create embeddings
-print("\n🧠 Generating embeddings...")
+# Embeddings
 embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
 
-# 🔹 Create FAISS index
-print("🗂️ Building vector store...")
+# Store in FAISS
 vectorstore = FAISS.from_documents(chunks, embeddings)
-
-# 🔹 Save vectorstore
 vectorstore.save_local("vectorstore")
 
-print("\n✅ All valid PDFs processed and stored in vector DB successfully!")
+print("\n✅ Multi-format documents processed successfully!")

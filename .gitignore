@@ -1,4 +1,12 @@
 venv/
-vectorstore/
-.env
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.faiss
+*.pkl
+vectorstore/
+image_vectorstore/
+.DS_Store
+.env
+.streamlit/

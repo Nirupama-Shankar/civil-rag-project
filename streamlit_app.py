@@ -6,15 +6,53 @@ from spellchecker import SpellChecker
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.llms import Ollama
+import os
 
-st.set_page_config(page_title="Civil Multimodal RAG", layout="wide")
+st.set_page_config(
+    page_title="Civil Concrete Knowledge System",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
-st.title("🏗️ Civil Concrete Intelligence System")
-st.write("Adaptive Multimodal RAG with Confidence & Transparency")
+st.markdown("""
+<style>
+header {visibility: hidden;}
+footer {visibility: hidden;}
 
-# -----------------------------
-# SPELL CORRECTION
-# -----------------------------
+.block-container {
+    padding-top: 2rem;
+    max-width: 900px;
+}
+
+.stTextInput>div>div>input {
+    border-radius: 10px;
+    padding: 12px;
+    font-size: 16px;
+}
+
+.answer-box {
+    padding: 28px;
+    border-radius: 14px;
+    background-color: #161B22;
+    border: 1px solid #2A2F36;
+    margin-top: 25px;
+}
+
+.confidence-badge {
+    display:inline-block;
+    padding:7px 16px;
+    border-radius:25px;
+    color:white;
+    font-size:14px;
+    margin-top:20px;
+    margin-bottom:30px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("Civil Concrete Knowledge System")
+st.caption("Adaptive Multimodal Retrieval with Transparency")
+
 spell = SpellChecker()
 
 def normalize_query(query):
@@ -25,9 +63,6 @@ def normalize_query(query):
         corrected_words.append(corrected if corrected else word)
     return " ".join(corrected_words)
 
-# -----------------------------
-# LOAD TEXT VECTORSTORE
-# -----------------------------
 @st.cache_resource
 def load_text_vectorstore():
     embeddings = HuggingFaceEmbeddings(
@@ -39,11 +74,6 @@ def load_text_vectorstore():
         allow_dangerous_deserialization=True
     )
 
-text_vectorstore = load_text_vectorstore()
-
-# -----------------------------
-# LOAD IMAGE VECTORSTORE
-# -----------------------------
 @st.cache_resource
 def load_image_vectorstore():
     return FAISS.load_local(
@@ -52,91 +82,70 @@ def load_image_vectorstore():
         allow_dangerous_deserialization=True
     )
 
+text_vectorstore = load_text_vectorstore()
 image_vectorstore = load_image_vectorstore()
 
-# -----------------------------
-# LOAD CLIP MODEL
-# -----------------------------
 model, _, preprocess = open_clip.create_model_and_transforms(
-    'ViT-B-32', pretrained='openai'
+    "ViT-B-32",
+    pretrained="openai"
 )
-tokenizer = open_clip.get_tokenizer('ViT-B-32')
+tokenizer = open_clip.get_tokenizer("ViT-B-32")
 
-# -----------------------------
-# LOAD LLM
-# -----------------------------
 llm = Ollama(model="llama3")
 
-# -----------------------------
-# USER INPUT
-# -----------------------------
-user_query = st.text_input("🔎 Enter your question:")
+user_query = st.text_input("Enter your question")
 
 if user_query:
-
-    # Spell correction
     normalized_query = normalize_query(user_query)
-
-    if normalized_query != user_query:
-        st.info(f"Did you mean: '{normalized_query}'?")
-
     query = normalized_query
 
-    with st.spinner("Performing multimodal retrieval..."):
+    text_docs_with_scores = text_vectorstore.similarity_search_with_score(query, k=4)
 
-        # ---------------- TEXT RETRIEVAL ----------------
-        text_docs_with_scores = text_vectorstore.similarity_search_with_score(query, k=4)
+    text_docs = []
+    text_scores = []
 
-        text_docs = []
-        text_scores = []
+    for doc, score in text_docs_with_scores:
+        text_docs.append(doc)
+        text_scores.append(score)
 
-        for doc, score in text_docs_with_scores:
-            text_docs.append(doc)
-            text_scores.append(score)
+    best_text_score = min(text_scores)
 
-        # Calibrated confidence (based on best match)
-        best_text_score = min(text_scores)
+    if best_text_score < 0.8:
+        text_confidence = "High Confidence"
+        confidence_color = "#2E7D32"
+    elif best_text_score < 1.2:
+        text_confidence = "Medium Confidence"
+        confidence_color = "#ED6C02"
+    else:
+        text_confidence = "Low Confidence"
+        confidence_color = "#D32F2F"
 
-        if best_text_score < 0.8:
-            text_confidence = "🟢 High Confidence"
-        elif best_text_score < 1.2:
-            text_confidence = "🟡 Medium Confidence"
-        else:
-            text_confidence = "🔴 Low Confidence"
+    text_tokens = tokenizer([query])
 
-        # ---------------- IMAGE RETRIEVAL ----------------
-        text_tokens = tokenizer([query])
+    with torch.no_grad():
+        query_embedding = model.encode_text(text_tokens)
+        query_embedding = query_embedding / query_embedding.norm(dim=-1, keepdim=True)
 
-        with torch.no_grad():
-            query_embedding = model.encode_text(text_tokens)
-            query_embedding = query_embedding / query_embedding.norm(dim=-1, keepdim=True)
+    query_embedding = query_embedding.squeeze().tolist()
 
-        query_embedding = query_embedding.squeeze().tolist()
+    image_docs_with_scores = image_vectorstore.similarity_search_with_score_by_vector(
+        query_embedding,
+        k=2
+    )
 
-        image_docs_with_scores = image_vectorstore.similarity_search_with_score_by_vector(
-            query_embedding,
-            k=2
-        )
+    image_docs = [doc for doc, _ in image_docs_with_scores]
 
-        image_docs = []
-        image_scores = []
+    context = ""
+    for i, doc in enumerate(text_docs):
+        source = doc.metadata.get("source", "Unknown").split("/")[-1]
+        page = doc.metadata.get("page", "Unknown")
+        context += f"\n[Source {i+1}: {source}, Page {page}]\n"
+        context += doc.page_content + "\n"
 
-        for doc, score in image_docs_with_scores:
-            image_docs.append(doc)
-            image_scores.append(score)
-
-        # ---------------- BUILD TEXT CONTEXT ----------------
-        context = ""
-        for i, doc in enumerate(text_docs):
-            source = doc.metadata.get("source", "Unknown").split("/")[-1]
-            page = doc.metadata.get("page", "Unknown")
-            context += f"\n[Source {i+1}: {source}, Page {page}]\n"
-            context += doc.page_content + "\n"
-
-        prompt = f"""
+    prompt = f"""
 You are an expert in Concrete Technology.
 
-Answer strictly using ONLY the provided text context.
+Answer strictly using ONLY the provided context.
 If the answer is not clearly available, say:
 "The provided documents do not contain sufficient information."
 
@@ -151,18 +160,29 @@ Question:
 Answer:
 """
 
-        response = llm.invoke(prompt)
+    response = llm.invoke(prompt)
 
-    # ---------------- DISPLAY ANSWER ----------------
-    st.subheader("📌 Answer")
+    st.markdown('<div class="answer-box">', unsafe_allow_html=True)
+    st.markdown("### Answer")
     st.write(response)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---------------- CONFIDENCE ----------------
-    st.subheader("🔍 Text Confidence")
-    st.write(text_confidence)
+    st.markdown(
+        f'<div class="confidence-badge" style="background:{confidence_color};">{text_confidence}</div>',
+        unsafe_allow_html=True
+    )
 
-    # ---------------- SOURCE DETAILS ----------------
-    st.subheader("📚 Text Source Details")
+    if image_docs:
+        st.markdown("### Related Diagrams")
+        cols = st.columns(2)
+        for i, doc in enumerate(image_docs):
+            image_file = doc.metadata.get("source")
+            image_path = os.path.join("images", image_file)
+            try:
+                image = Image.open(image_path)
+                cols[i % 2].image(image, width=400)
+            except:
+                pass
 
     unique_sources = set()
     for doc in text_docs:
@@ -170,28 +190,15 @@ Answer:
         page = doc.metadata.get("page", "Unknown")
         unique_sources.add((source, page))
 
-    for source, page in sorted(unique_sources):
-        st.write(f"- {source} (Page {page})")
+    with st.expander("Sources"):
+        for source, page in sorted(unique_sources):
+            st.write(f"{source} — Page {page}")
 
-    # ---------------- DISPLAY IMAGES ----------------
-    st.subheader("🖼 Related Diagrams")
-
-    for doc in image_docs:
-        image_file = doc.metadata.get("source")
-        image_path = f"images/{image_file}"
-
-        try:
-            image = Image.open(image_path)
-            st.image(image, caption=image_file, use_column_width=True)
-        except:
-            st.write(f"Could not load image: {image_file}")
-
-    # ---------------- RETRIEVAL TRANSPARENCY ----------------
-    with st.expander("📖 Retrieved Text Preview"):
+    with st.expander("Retrieved Context Preview"):
         for i, doc in enumerate(text_docs):
             source = doc.metadata.get("source", "Unknown").split("/")[-1]
             page = doc.metadata.get("page", "Unknown")
-            st.write(f"**Source {i+1}: {source} (Page {page})**")
+            st.write(f"Source {i+1}: {source} (Page {page})")
             st.write(doc.page_content[:400] + "...")
             st.write(f"Similarity Score: {text_scores[i]}")
             st.write("---")
