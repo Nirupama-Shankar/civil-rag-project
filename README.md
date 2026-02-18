@@ -1,3 +1,4 @@
+Built as an exploration of multimodal retrieval and grounded LLM reasoning in domain-specific technical documents.
 **Civil Multimodal RAG System**
 
 A multimodal Retrieval-Augmented Generation (RAG) system for Civil Engineering documents.
