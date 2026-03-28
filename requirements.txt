@@ -1,9 +1,0 @@
-langchain
-langchain-community
-pypdf
-faiss-cpu
-sentence-transformers
-openai
-python-dotenv
-streamlit
-docx2txt

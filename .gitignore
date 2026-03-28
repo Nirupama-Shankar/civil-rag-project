@@ -10,3 +10,6 @@ image_vectorstore/
 .DS_Store
 .env
 .streamlit/
+civil_ai_frontend/node_modules/
+civil_ai_frontend/build/
+civil_ai_frontend/.env

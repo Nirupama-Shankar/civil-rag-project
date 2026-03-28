@@ -1,0 +1,36 @@
+# Core LangChain
+langchain
+langchain-community
+langchain-core
+langchain-text-splitters
+
+# PDF + Document processing
+pypdf
+pdfplumber
+docx2txt
+pytesseract
+Pillow
+
+# Embeddings + Vector store
+sentence-transformers
+faiss-cpu
+
+# Hybrid retrieval
+rank-bm25
+
+# LLM + API
+ollama
+fastapi
+uvicorn
+
+# Multimodal (CLIP)
+open_clip_torch
+torch
+
+# Data
+pandas
+numpy
+python-dotenv
+
+# UI options
+streamlit

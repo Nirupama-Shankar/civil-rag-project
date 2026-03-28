@@ -1,0 +1,24 @@
+SLUMP TEST
+
+The slump test is used to determine the workability or consistency of freshly mixed concrete. 
+It is one of the most common field tests in concrete construction.
+
+Apparatus:
+- Slump cone (height: 300 mm)
+- Tamping rod
+- Base plate
+
+Procedure:
+1. The slump cone is placed on a level surface.
+2. It is filled with fresh concrete in three equal layers.
+3. Each layer is tamped 25 times using a tamping rod.
+4. The cone is lifted vertically upward.
+5. The subsidence of concrete is measured in millimeters.
+
+Types of Slump:
+- True slump
+- Shear slump
+- Collapse slump
+
+Significance:
+The slump value indicates the water-cement ratio and workability of the concrete mix.

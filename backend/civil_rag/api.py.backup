@@ -1,0 +1,426 @@
+"""
+Civil Engineering RAG API - Main Application
+"""
+
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from pydantic import BaseModel
+from typing import List, Optional
+import ollama
+import os
+import shutil
+from datetime import datetime
+
+from .hybrid_retriever import hybrid_retrieval
+from .agent_controller import agent_plan
+from .conversation_memory import memory
+from .ingest import ingest
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+
+app = FastAPI(title="Civil Engineering RAG API", version="1.0.0")
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Embeddings
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
+
+def load_vectorstore(path: str):
+    possible_paths = [
+        path,
+        f"../{path}",
+        f"/Users/apple/Documents/Projects/civil_rag_project/backend/{path}",
+    ]
+    for p in possible_paths:
+        if os.path.exists(p):
+            print(f"✅ Found vectorstore at: {p}")
+            try:
+                return FAISS.load_local(p, embeddings, allow_dangerous_deserialization=True)
+            except Exception as e:
+                print(f"⚠️ Error loading {p}: {e}")
+    print(f"⚠️ Vectorstore not found: {path}")
+    return None
+
+# Load stores
+text_store = load_vectorstore("vectorstore")
+dataset_store = load_vectorstore("dataset_vectorstore")
+image_store = load_vectorstore("image_vectorstore")
+
+class QueryRequest(BaseModel):
+    query: str
+    session_id: Optional[str] = None
+
+class QueryResponse(BaseModel):
+    answer: str
+    tools: List[str]
+    sources: List[str]
+    session_id: str
+
+@app.get("/")
+def root():
+    return {
+        "name": "Civil Engineering RAG System",
+        "version": "1.0.0",
+        "status": "running",
+    }
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
+
+@app.post("/ask", response_model=QueryResponse)
+async def ask_question(req: QueryRequest):
+    if not req.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+    
+    session_id = req.session_id
+    if not session_id:
+        session_id = memory.create_session()
+    
+    memory.add_message("user", req.query, session_id)
+    
+    print(f"\n📝 Question: {req.query}")
+    
+    tools = agent_plan(req.query, ollama)
+    print(f"🛠️ Tools selected: {tools}")
+    
+    docs = hybrid_retrieval(req.query, text_store, dataset_store, image_store, tools)
+    
+    if not docs:
+        answer = "No relevant information found in the documents."
+        sources = []
+    else:
+        print(f"📄 Retrieved {len(docs)} documents")
+        
+        context_parts = []
+        for doc in docs[:5]:
+            source = doc.metadata.get('source', 'Unknown')
+            context_parts.append(f"[SOURCE: {source}]\n{doc.page_content}")
+        
+        context = "\n\n".join(context_parts)
+        
+        prompt = f"""You are a civil engineering expert assistant.
+
+CONTEXT:
+{context}
+
+QUESTION: {req.query}
+
+INSTRUCTIONS:
+1. Answer using ONLY the context above
+2. If the answer is not in context, say "Not found in documents"
+3. Be specific and cite sources
+
+ANSWER:"""
+        
+        try:
+            response = ollama.chat(
+                model="llama3",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            answer = response["message"]["content"]
+        except Exception as e:
+            answer = f"Error: {str(e)}"
+        
+        sources = list({doc.metadata.get("source", "Unknown") for doc in docs[:5]})
+    
+    memory.add_message("assistant", answer, session_id)
+    
+    return QueryResponse(
+        answer=answer,
+        tools=tools,
+        sources=sources,
+        session_id=session_id
+    )
+
+@app.post("/ask_agentic", response_model=QueryResponse)
+async def ask_agentic_question(req: QueryRequest):
+    if not req.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+    
+    session_id = req.session_id
+    if not session_id:
+        session_id = memory.create_session()
+    
+    memory.add_message("user", req.query, session_id)
+    
+    print(f"\n🤖 AGENTIC MODE: {req.query}")
+    
+    from .agentic_controller import init_agentic, get_agentic
+    if get_agentic() is None:
+        init_agentic(ollama)
+    
+    agentic = get_agentic()
+    
+    plan = agentic.plan(req.query)
+    print(f"   Steps: {len(plan.get('steps', []))}")
+    
+    def retrieval_func(query, tool):
+        tools = [tool]
+        return hybrid_retrieval(query, text_store, dataset_store, image_store, tools)
+    
+    results = agentic.execute(plan, req.query, retrieval_func)
+    
+    all_docs = []
+    for result in results:
+        all_docs.extend(result.get("documents", []))
+    
+    print(f"📚 Total documents: {len(all_docs)}")
+    
+    if not all_docs:
+        answer = "No relevant information found in the documents."
+        sources = []
+    else:
+        seen = set()
+        unique_docs = []
+        for doc in all_docs:
+            key = doc.page_content[:100]
+            if key not in seen:
+                seen.add(key)
+                unique_docs.append(doc)
+        
+        context = "\n\n".join([doc.page_content for doc in unique_docs[:5]])
+        sources = list({doc.metadata.get("source", "Unknown") for doc in unique_docs[:5]})
+        answer = agentic.answer(req.query, context, plan, results)
+    
+    memory.add_message("assistant", answer, session_id)
+    
+    return QueryResponse(
+        answer=answer,
+        tools=["🤖 agentic_ai"],
+        sources=sources,
+        session_id=session_id
+    )
+
+@app.post("/ask_agentic_v2", response_model=QueryResponse)
+async def ask_agentic_v2(req: QueryRequest):
+    if not req.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+    
+    session_id = req.session_id
+    if not session_id:
+        session_id = memory.create_session()
+    
+    memory.add_message("user", req.query, session_id)
+    
+    print(f"\n🎯 MULTI-AGENT MODE: {req.query}")
+    
+    from .agents import init_orchestrator, get_orchestrator
+    if get_orchestrator() is None:
+        init_orchestrator(ollama, text_store, dataset_store, image_store)
+    
+    orchestrator = get_orchestrator()
+    result = orchestrator.execute(req.query)
+    
+    answer = result["answer"]
+    sources = result["sources"]
+    metrics = result["agent_metrics"]
+    
+    memory.add_message("assistant", answer, session_id)
+    
+    return QueryResponse(
+        answer=answer,
+        tools=["🎯 multi_agent_orchestrator"],
+        sources=sources,
+        session_id=session_id
+    )
+
+@app.post("/upload")
+async def upload_document(file: UploadFile = File(...)):
+    allowed_extensions = {'.pdf', '.docx', '.txt', '.csv'}
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    
+    if file_ext not in allowed_extensions:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"File type not allowed. Allowed: {allowed_extensions}"}
+        )
+    
+    data_folder = "/Users/apple/Documents/Projects/civil_rag_project/backend/data"
+    os.makedirs(data_folder, exist_ok=True)
+    file_path = os.path.join(data_folder, file.filename)
+    
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        print(f"\n📄 File saved: {file.filename}")
+        print(f"🔄 Ingesting...")
+        
+        ingest()
+        
+        return {
+            "success": True,
+            "message": f"Document '{file.filename}' uploaded and ingested successfully",
+            "filename": file.filename
+        }
+        
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to process file: {str(e)}"}
+        )
+
+@app.post("/clear_session")
+def clear_session(session_id: str):
+    success = memory.clear_session(session_id)
+    return {"success": success}
+
+@app.post("/export_pdf")
+async def export_pdf(request: Request):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER
+    from fastapi.responses import StreamingResponse
+    import io
+    
+    data = await request.json()
+    question = data.get('question', '')
+    answer = data.get('answer', '')
+    sources = data.get('sources', [])
+    
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    
+    story = []
+    story.append(Paragraph("Civil Engineering AI Assistant", ParagraphStyle('Title', parent=styles['Heading1'], fontSize=24, alignment=TA_CENTER)))
+    story.append(Spacer(1, 20))
+    story.append(Paragraph(f"Question: {question}", styles['Heading2']))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(answer, styles['Normal']))
+    story.append(Spacer(1, 20))
+    
+    if sources:
+        story.append(Paragraph("Sources:", styles['Heading3']))
+        for s in sources:
+            story.append(Paragraph(f"• {s}", styles['Normal']))
+    
+    doc.build(story)
+    buffer.seek(0)
+    
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=answer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"}
+    )
+
+@app.get("/image/{filename}")
+async def get_image(filename: str):
+    images_folder = "/Users/apple/Documents/Projects/civil_rag_project/backend/images"
+    for root, dirs, files in os.walk(images_folder):
+        if filename in files:
+            return FileResponse(os.path.join(root, filename))
+    return JSONResponse(status_code=404, content={"error": "Image not found"})
+
+@app.post("/search_images")
+async def search_images_endpoint(request: Request):
+    data = await request.json()
+    query = data.get('query', '')
+    
+    if not image_store:
+        return {"images": []}
+    
+    try:
+        docs = image_store.similarity_search(query, k=5)
+        images = []
+        for doc in docs:
+            images.append({
+                "filename": doc.metadata.get("source", ""),
+                "description": doc.page_content
+            })
+        return {"images": images}
+    except Exception as e:
+        print(f"Image search error: {e}")
+        return {"images": []}
+
+@app.post("/search_images")
+async def search_images_endpoint(request: Request):
+    """Search for images using keyword matching"""
+    data = await request.json()
+    query = data.get('query', '')
+    
+    print(f"🔍 IMAGE SEARCH: {query}")
+    
+    from .image_search import search_images
+    
+    results = search_images(query, k=5)
+    
+    print(f"📸 Found {len(results)} images")
+    
+    images = []
+    for img in results:
+        images.append({
+            "filename": img['filename'],
+            "path": img['path'],
+            "url": f"/image/{img['filename']}"
+        })
+    
+    return {"images": images}
+
+@app.post("/search_images")
+async def search_images_endpoint(request: Request):
+    """Search for images using keyword matching"""
+    data = await request.json()
+    query = data.get('query', '')
+    
+    print(f"🔍 IMAGE SEARCH REQUEST: '{query}'")
+    
+    try:
+        from .image_search import search_images
+        results = search_images(query, k=5)
+        
+        print(f"📸 Found {len(results)} images")
+        for img in results[:3]:
+            print(f"   - {img['filename']}")
+        
+        images = []
+        for img in results:
+            images.append({
+                "filename": img['filename'],
+                "path": img['path'],
+                "url": f"/image/{img['filename']}"
+            })
+        
+        return {"images": images}
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"images": []}
+
+@app.post("/search_images")
+async def search_images_endpoint(request: Request):
+    """Search for images using keyword matching"""
+    data = await request.json()
+    query = data.get('query', '')
+    
+    print(f"🔍 IMAGE SEARCH: '{query}'")
+    
+    # Use our simple image search directly
+    from .image_search import search_images
+    
+    results = search_images(query, k=5)
+    
+    print(f"📸 Found {len(results)} images")
+    
+    images = []
+    for img in results:
+        images.append({
+            "filename": img['filename'],
+            "path": img['path'],
+            "url": f"/image/{img['filename']}"
+        })
+    
+    return {"images": images}
